@@ -1,0 +1,14 @@
+# Merge into the primary's shared ~/openpak/deploy/traefik/dynamic.yml. The gateway forwards
+# Live service 16 here.
+http:
+  routers:
+    x360-xarb-web:
+      entryPoints: [web]
+      rule: PathPrefix(`/XArb`)
+      priority: 40
+      service: x360-xarb-http
+  services:
+    x360-xarb-http:
+      loadBalancer:
+        servers:
+        - url: http://openpak-x360-xarb:10016

@@ -1,0 +1,24 @@
+# PRIMARY host. OpenPak Xbox 360 arbitration (x360-xarb): Live service 16 requests the security
+# gateway tunnels to the primary's Traefik. Identity headers are trusted only with the gateway key.
+[Unit]
+Description=OpenPak Xbox 360 arbitration (x360-xarb)
+
+[Container]
+ContainerName=openpak-x360-xarb
+Image=ghcr.io/openpak/x360-xarb:latest
+AutoUpdate=registry
+Network=openpak.network
+IP=10.89.2.202
+Environment=X360_XARB_ADDR=:10016
+Environment=X360_XARB_STATPOST_URL=http://openpak-x360-xstats:10007/xstats/statpost.ashx
+EnvironmentFile=%h/openpak/deploy/x360-gateway-key.env
+ReadOnly=true
+DropCapability=ALL
+NoNewPrivileges=true
+UserNS=keep-id:uid=100,gid=101
+
+[Service]
+Restart=always
+
+[Install]
+WantedBy=default.target

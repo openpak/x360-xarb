@@ -1,0 +1,43 @@
+// Command x360-xarb serves Xbox Live arbitration, Live service 16 (see internal/xarb).
+package main
+
+import (
+	"context"
+	"errors"
+	"log/slog"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"github.com/openpak/x360-common/wire"
+	"github.com/openpak/x360-xarb/internal/xarb"
+)
+
+func main() {
+	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	addr := os.Getenv("X360_XARB_ADDR")
+	if addr == "" {
+		addr = ":10016"
+	}
+	key := os.Getenv("X360_GATEWAY_KEY")
+	h := &xarb.Handler{Store: xarb.NewStore(), Log: log}
+	if u := os.Getenv("X360_XARB_STATPOST_URL"); u != "" { // e.g. http://openpak-x360-xstats:10007/xstats/statpost.ashx
+		h.StatPost = xarb.PostTo(u, key, &http.Client{Timeout: 5 * time.Second})
+	}
+	srv := &http.Server{Addr: addr, Handler: wire.Guard(key, h), ReadHeaderTimeout: 10 * time.Second}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	go func() {
+		<-ctx.Done()
+		sc, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		srv.Shutdown(sc)
+	}()
+	log.Info("x360-xarb listening", "addr", addr, "statpost", h.StatPost != nil)
+	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		log.Error("serve", "err", err)
+		os.Exit(1)
+	}
+}
