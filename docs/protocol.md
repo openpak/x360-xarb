@@ -1,6 +1,6 @@
 # Protocol: x360-xarb
 
-Live service 16 (`XArb`), XAM 17559, static RE 2026-11-01. Default port 1000 (the D7 port rule:
+Live service 16 (`XArb`), XAM 17559, static RE. Default port 1000 (the D7 port rule:
 port = service id, except 16 -> 1000). Bodies are XRL "xon" (little-endian fields, no padding)
 or, over UDP, the same fields written by hand.
 
