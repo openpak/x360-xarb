@@ -44,3 +44,7 @@ then the body. Source port is random above 5000; 3 tries, 1 s each. XAM reads th
 success needs `200 OK` in it, and `X-Err: <hex>` sets the HRESULT (`FUN_81918858`). The
 security gateway turns the datagram into an HTTP request to this service and sends the HTTP
 response back as one datagram (x360-gateway docs/protocol.md, "UDP").
+
+## Derivation
+
+Schemas of 0xF00-0xF02 were dumped from the 17559 XRL table, with argument order matched to the XAM builders and callers. The Register reply built by the tests decodes field for field under the XAM codec model. The UDP bodies and the text reply check come from the XAM decompile.

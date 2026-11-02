@@ -35,7 +35,6 @@ X360_XARB_STATPOST_URL=http://localhost:10007/xstats/statpost.ashx GOWORK=off go
 ## Docs
 
 - [Protocol](docs/protocol.md)
-- [Evidence](docs/evidence.md)
 - [Deploy](docs/deploy.md)
 
 ## Licence
