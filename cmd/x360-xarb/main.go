@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/openpak/x360-common/httplog"
 	"github.com/openpak/x360-common/wire"
 	"github.com/openpak/x360-xarb/internal/xarb"
 )
@@ -26,7 +27,7 @@ func main() {
 	if u := os.Getenv("X360_XARB_STATPOST_URL"); u != "" { // e.g. http://openpak-x360-xstats:10007/xstats/statpost.ashx
 		h.StatPost = xarb.PostTo(u, key, &http.Client{Timeout: 5 * time.Second})
 	}
-	srv := &http.Server{Addr: addr, Handler: wire.Guard(key, h), ReadHeaderTimeout: 10 * time.Second}
+	srv := &http.Server{Addr: addr, Handler: httplog.Wrap(wire.Guard(key, h)), ReadHeaderTimeout: 10 * time.Second}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	go func() {
