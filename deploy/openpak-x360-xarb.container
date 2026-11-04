@@ -14,6 +14,8 @@ IP=10.89.2.202
 Environment=X360_XARB_ADDR=:10016
 Environment=X360_XARB_STATPOST_URL=http://openpak-x360-xstats:10007/xstats/statpost.ashx
 EnvironmentFile=%h/openpak/deploy/x360-gateway-key.env
+# X360_XSTATS_ARB_KEY / X360_XARB_ARB_KEY (one shared secret): lets xarb vouch for a result's participants. Mode 0600, never committed.
+EnvironmentFile=%h/openpak/deploy/x360-arb-key.env
 # db.env defines X360_XARB_DATABASE_URL (Postgres, schema x360_xarb; required), mode 0600, never committed.
 EnvironmentFile=%h/openpak/deploy/x360-xarb/db.env
 ReadOnly=true

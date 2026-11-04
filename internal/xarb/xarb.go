@@ -35,6 +35,12 @@ const (
 	machineIDPrefix = 0x0009000000000000
 )
 
+// Headers that carry an arbitrated result's participants to x360-xstats (same names there).
+const (
+	ArbKeyHeader   = "X-X360-Arb-Key"
+	ArbUsersHeader = "X-X360-Arb-Users"
+)
+
 var errShort = errors.New("xarb: short body")
 
 type key struct{ kid, nonce uint64 }
@@ -406,12 +412,32 @@ func (h *Handler) report(r *http.Request, machine uint64, body []byte) error {
 	// ponytail: first come, not Live's vote across registrants; a console that
 	// reports first can write any result. Compare reports here if that matters.
 	var keep [][]byte
+	hdr := r.Header
 	if a == nil {
 		keep = list
 	} else {
+		// Only the session's registered participants may have a row in the result; the
+		// list goes to xstats (ArbUsersHeader) so it accepts them besides the reporter's own XUIDs.
+		part := map[uint64]bool{}
+		var plist []string
+		for _, rg := range a.regs {
+			for _, u := range rg.users {
+				if !part[u] {
+					part[u] = true
+					plist = append(plist, hx(u))
+				}
+			}
+		}
+		hdr = r.Header.Clone()
+		hdr.Set(ArbUsersHeader, strings.Join(plist, ","))
 		seen := map[[2]uint64]bool{}
+		dropped := 0
 		for _, p := range list {
 			id, ok := rowKey(p)
+			if !ok || !part[id[0]] {
+				dropped++
+				continue
+			}
 			if ok && a.written[id] {
 				continue
 			}
@@ -419,6 +445,9 @@ func (h *Handler) report(r *http.Request, machine uint64, body []byte) error {
 				seen[id] = true
 			}
 			keep = append(keep, p)
+		}
+		if dropped > 0 {
+			h.log().Warn("result rows for non-participants dropped", "rows", dropped)
 		}
 		for id := range seen {
 			a.written[id] = true
@@ -437,7 +466,7 @@ func (h *Handler) report(r *http.Request, machine uint64, body []byte) error {
 	post := binary.LittleEndian.AppendUint32(nil, title)
 	post = binary.LittleEndian.AppendUint16(post, uint16(len(keep)))
 	post = append(post, bytes.Join(keep, nil)...)
-	return h.StatPost(r.Context(), r.Header, post)
+	return h.StatPost(r.Context(), hdr, post)
 }
 
 // width is the value size of each stats value type (x360-xstats wire.go).
@@ -489,8 +518,8 @@ func rowKey(p []byte) ([2]uint64, bool) {
 }
 
 // PostTo returns a StatPost that sends the body to an xstats statpost URL with
-// the console's identity headers and the gateway key.
-func PostTo(url, gatewayKey string, cl *http.Client) func(context.Context, http.Header, []byte) error {
+// the console's identity headers, the gateway key and, for a registered session, its participants with arbKey.
+func PostTo(url, gatewayKey, arbKey string, cl *http.Client) func(context.Context, http.Header, []byte) error {
 	return func(ctx context.Context, hdr http.Header, body []byte) error {
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 		if err != nil {
@@ -500,6 +529,10 @@ func PostTo(url, gatewayKey string, cl *http.Client) func(context.Context, http.
 		req.Header.Set(wire.AccountHeader, hdr.Get(wire.AccountHeader))
 		req.Header.Set(wire.UsersHeader, hdr.Get(wire.UsersHeader))
 		req.Header.Set(wire.GatewayKeyHeader, gatewayKey)
+		if u := hdr.Get(ArbUsersHeader); u != "" && arbKey != "" {
+			req.Header.Set(ArbKeyHeader, arbKey)
+			req.Header.Set(ArbUsersHeader, u)
+		}
 		resp, err := cl.Do(req)
 		if err != nil {
 			return err

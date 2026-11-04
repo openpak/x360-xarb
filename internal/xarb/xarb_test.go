@@ -34,8 +34,10 @@ func proc(xuid uint64) []byte {
 
 func TestArbitration(t *testing.T) {
 	var posts [][]byte
-	h := &Handler{Store: NewStore(), StatPost: func(_ context.Context, _ http.Header, b []byte) error {
+	var postHdr http.Header
+	h := &Handler{Store: NewStore(), StatPost: func(_ context.Context, hd http.Header, b []byte) error {
 		posts = append(posts, b)
+		postHdr = hd
 		return nil
 	}}
 	do := func(path, acct, users, ctype string, body []byte) (int, []byte) {
@@ -72,6 +74,9 @@ func TestArbitration(t *testing.T) {
 		len(posts[0]) != 6+2*len(proc(1)) || binary.LittleEndian.Uint32(posts[0]) != 0x4d5307e6 {
 		t.Fatalf("xrl report: %d %x", c, posts)
 	}
+	if got := postHdr.Get(ArbUsersHeader); got != "e000000000000001,e000000000000002" {
+		t.Fatalf("participants header %q", got)
+	}
 	udp := append(hdr(1), byte(2*len(proc(1))), 0, 0, 0)
 	udp = append(append(udp, proc(0xe000000000000002)...), proc(0xe000000000000001)...)
 	if c, _ := do("/XArb/ReportResult.ashx", "000000000002@xbox.com", "", "xon/16", udp); c != 200 || len(posts) != 1 {
@@ -79,6 +84,32 @@ func TestArbitration(t *testing.T) {
 	}
 	if c, _ := do("/XArb/ReportResult.ashx", "000000000001@xbox.com", "", "xon/5", xrl[:len(xrl)-5]); c != 400 {
 		t.Fatalf("truncated report: %d", c)
+	}
+}
+
+// A result row for an XUID that never registered in the session is dropped before xstats.
+func TestReportDropsNonParticipant(t *testing.T) {
+	var posts [][]byte
+	h := &Handler{Store: NewStore(), StatPost: func(_ context.Context, _ http.Header, b []byte) error {
+		posts = append(posts, b)
+		return nil
+	}}
+	do := func(path, acct, users, ctype string, body []byte) int {
+		r := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body))
+		r.Header.Set(wire.AccountHeader, acct)
+		r.Header.Set(wire.UsersHeader, users)
+		r.Header.Set("Content-Type", ctype)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w.Code
+	}
+	reg := append(hdr(6), 0x2c, 0x01)
+	do("/XArb/Register.ashx", "000000000001@xbox.com", "e000000000000001:a", "xon/5", reg)
+	xrl := append(hdr(0x100), 0, 0, 0, 0, 0xe6, 0x07, 0x53, 0x4d, 2, 0)
+	xrl = append(append(xrl, proc(0xe000000000000001)...), proc(0xe0000000000000ff)...)
+	if c := do("/XArb/ReportResult.ashx", "000000000001@xbox.com", "", "xon/5", xrl); c != 200 ||
+		len(posts) != 1 || len(posts[0]) != 6+len(proc(1)) {
+		t.Fatalf("report with a stranger's row: %d %x", c, posts)
 	}
 }
 
