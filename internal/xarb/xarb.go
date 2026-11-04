@@ -544,3 +544,45 @@ func PostTo(url, gatewayKey, arbKey string, cl *http.Client) func(context.Contex
 		return nil
 	}
 }
+
+// Erase removes xuids from every live arbitrated session: they leave the
+// registrations (a console left with no user is dropped) and the rows already
+// taken from a report. Returns how many entries that removed; idempotent.
+func (s *Store) Erase(xuids []uint64) (int, error) {
+	gone := map[uint64]bool{}
+	for _, x := range xuids {
+		gone[x] = true
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for _, a := range s.m {
+		regs := a.regs[:0]
+		for _, r := range a.regs {
+			users := r.users[:0:0]
+			for _, u := range r.users {
+				if gone[u] {
+					n++
+					continue
+				}
+				users = append(users, u)
+			}
+			if len(users) == 0 && len(r.users) > 0 {
+				continue
+			}
+			r.users = users
+			regs = append(regs, r)
+		}
+		a.regs = regs
+		for w := range a.written {
+			if gone[w[0]] {
+				delete(a.written, w)
+				n++
+			}
+		}
+	}
+	if n == 0 {
+		return 0, nil
+	}
+	return n, s.saveLocked()
+}

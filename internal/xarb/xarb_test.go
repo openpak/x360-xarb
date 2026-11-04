@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/openpak/x360-common/pgstate"
 	"github.com/openpak/x360-common/wire"
@@ -176,5 +177,23 @@ func TestRestartKeepsSessions(t *testing.T) {
 	}
 	if c, _ := do(h, "/XArb/ReportResult.ashx", "000000000001@xbox.com", "xon/5", xrl); c != 200 || posts != 1 {
 		t.Fatalf("duplicate after the restart posted: %d %d", c, posts)
+	}
+}
+
+func TestEraseDropsXUIDsFromSessions(t *testing.T) {
+	s := NewStore()
+	const a, b, c = 0x0009000000000001, 0x0009000000000002, 0x0009000000000003
+	s.m[key{1, 1}] = &arb{expires: time.Now().Add(time.Hour), written: map[[2]uint64]bool{{a, 1}: true, {b, 1}: true},
+		regs: []registrant{{machine: 10, users: []uint64{a}}, {machine: 11, users: []uint64{a, b}}, {machine: 12, users: []uint64{c}}}}
+	n, err := s.Erase([]uint64{a})
+	if err != nil || n != 3 { // two registrations and one written row
+		t.Fatalf("erase: %d %v", n, err)
+	}
+	if n, err := s.Erase([]uint64{a}); err != nil || n != 0 {
+		t.Fatalf("second erase: %d %v", n, err)
+	}
+	x := s.m[key{1, 1}]
+	if len(x.regs) != 2 || x.regs[0].machine != 11 || len(x.regs[0].users) != 1 || x.regs[0].users[0] != b || x.regs[1].machine != 12 || len(x.written) != 1 {
+		t.Fatalf("session after erase: %+v", x)
 	}
 }

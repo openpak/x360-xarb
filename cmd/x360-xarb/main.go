@@ -11,8 +11,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/openpak/x360-common/erase"
 	"github.com/openpak/x360-common/httplog"
 	"github.com/openpak/x360-common/wire"
+	"github.com/openpak/x360-common/xuacsapi"
 	"github.com/openpak/x360-xarb/internal/xarb"
 )
 
@@ -38,6 +40,20 @@ func main() {
 	srv := &http.Server{Addr: addr, Handler: httplog.Wrap(wire.Guard(key, h)), ReadHeaderTimeout: 10 * time.Second}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	// Account erasure (card #120): sessions hold XUIDs, which xuacs still knows
+	// while the website finaliser runs (x360-xuacs is erased last).
+	if u, k := os.Getenv("X360_XUACS_INTERNAL_URL"), os.Getenv("X360_XUACS_INTERNAL_KEY"); u != "" && k != "" {
+		ids := &xuacsapi.Client{URL: u, Key: k}
+		erase.Serve(ctx, "x360-xarb", func(c context.Context, account string) (int, error) {
+			xs, err := ids.AccountXUIDs(c, account)
+			if err != nil {
+				return 0, err
+			}
+			return store.Erase(xs)
+		})
+	} else if os.Getenv("ACCOUNT_ERASE_KEY") != "" {
+		log.Warn("account erase endpoint disabled: X360_XUACS_INTERNAL_URL and X360_XUACS_INTERNAL_KEY are not set")
+	}
 	go func() {
 		<-ctx.Done()
 		sc, cancel := context.WithTimeout(context.Background(), 5*time.Second)
