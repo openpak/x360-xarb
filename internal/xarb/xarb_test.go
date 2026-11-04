@@ -3,12 +3,15 @@ package xarb
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/binary"
 	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 
+	"github.com/openpak/x360-common/pgstate"
 	"github.com/openpak/x360-common/wire"
 )
 
@@ -76,5 +79,71 @@ func TestArbitration(t *testing.T) {
 	}
 	if c, _ := do("/XArb/ReportResult.ashx", "000000000001@xbox.com", "", "xon/5", xrl[:len(xrl)-5]); c != 400 {
 		t.Fatalf("truncated report: %d", c)
+	}
+}
+
+func dsn(t *testing.T) string {
+	t.Helper()
+	d := os.Getenv("X360_TEST_DATABASE_URL")
+	if d == "" {
+		t.Skip("X360_TEST_DATABASE_URL not set")
+	}
+	return d
+}
+
+func TestOpenStoreRefusesWithoutDSN(t *testing.T) {
+	if _, err := OpenStore(context.Background(), "", Schema); err == nil {
+		t.Fatal("started without a database URL")
+	}
+}
+
+// TestRestartKeepsSessions: registrations and the rows already taken from a report survive a
+// restart (the store reopened from Postgres), so a late duplicate report still drops.
+func TestRestartKeepsSessions(t *testing.T) {
+	d := dsn(t)
+	b := make([]byte, 6)
+	rand.Read(b)
+	schema := "t_xarb_" + hex.EncodeToString(b)
+	t.Cleanup(func() {
+		if p, err := pgstate.Open(context.Background(), d, schema); err == nil {
+			p.Pool().Exec(context.Background(), "DROP SCHEMA "+schema+" CASCADE")
+			p.Close()
+		}
+	})
+	var posts int
+	mk := func() (*Handler, *Store) {
+		s, err := OpenStore(context.Background(), d, schema)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(s.Close)
+		return &Handler{Store: s, StatPost: func(context.Context, http.Header, []byte) error { posts++; return nil }}, s
+	}
+	do := func(h *Handler, path, acct, ctype string, body []byte) (int, []byte) {
+		r := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body))
+		r.Header.Set(wire.AccountHeader, acct)
+		r.Header.Set("Content-Type", ctype)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w.Code, w.Body.Bytes()
+	}
+	h, s := mk()
+	reg := append(hdr(6), 0x2c, 0x01)
+	if c, _ := do(h, "/XArb/Register.ashx", "000000000001@xbox.com", "xon/5", reg); c != 200 {
+		t.Fatalf("register: %d", c)
+	}
+	xrl := append(hdr(0x100), 0, 0, 0, 0, 0xe6, 0x07, 0x53, 0x4d, 1, 0)
+	xrl = append(xrl, proc(0xe000000000000001)...)
+	if c, _ := do(h, "/XArb/ReportResult.ashx", "000000000001@xbox.com", "xon/5", xrl); c != 200 || posts != 1 {
+		t.Fatalf("report: %d %d", c, posts)
+	}
+	s.Close()
+
+	h, _ = mk() // restart
+	if c, _ := do(h, "/XArb/TimeExtend.ashx", "000000000003@xbox.com", "xon/16", reg); c != 403 {
+		t.Fatalf("a stranger after the restart: %d (registrations lost?)", c)
+	}
+	if c, _ := do(h, "/XArb/ReportResult.ashx", "000000000001@xbox.com", "xon/5", xrl); c != 200 || posts != 1 {
+		t.Fatalf("duplicate after the restart posted: %d %d", c, posts)
 	}
 }

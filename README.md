@@ -24,7 +24,7 @@ Every request needs the gateway's console account header (`X-X360-Account`, trus
 `X360_GATEWAY_KEY`). A registrant's machine id is the console's KDC machine account id, its users
 are the users signed in on the tunnel. Only registrants may extend or report. Every console of a
 ranked match reports; the first report of a player's row in a view wins and later copies are
-dropped, so summed columns count once. Registrations live in memory.
+dropped, so summed columns count once. Registrations and the rows already taken live in Postgres (`X360_XARB_DATABASE_URL`, schema `x360_xarb`, required), so a restart loses nothing. The stats themselves go to [`x360-xstats`](https://github.com/openpak/x360-xstats), the one place that turns statpost writes into entries of the leaderboards core; xarb keeps no score table.
 
 ## Run
 

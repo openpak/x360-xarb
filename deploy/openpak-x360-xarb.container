@@ -2,6 +2,8 @@
 # gateway tunnels to the primary's Traefik. Identity headers are trusted only with the gateway key.
 [Unit]
 Description=OpenPak Xbox 360 arbitration (x360-xarb)
+Wants=openpak-postgres.service
+After=openpak-postgres.service
 
 [Container]
 ContainerName=openpak-x360-xarb
@@ -12,6 +14,8 @@ IP=10.89.2.202
 Environment=X360_XARB_ADDR=:10016
 Environment=X360_XARB_STATPOST_URL=http://openpak-x360-xstats:10007/xstats/statpost.ashx
 EnvironmentFile=%h/openpak/deploy/x360-gateway-key.env
+# db.env defines X360_XARB_DATABASE_URL (Postgres, schema x360_xarb; required), mode 0600, never committed.
+EnvironmentFile=%h/openpak/deploy/x360-xarb/db.env
 ReadOnly=true
 DropCapability=ALL
 NoNewPrivileges=true

@@ -6,3 +6,5 @@ Traefik routes from `deploy/traefik.yml` merged into the shared dynamic file.
 service only once 16 is in the KDC's D7 list (`X360_KDC_D7_SERVICES`) and the gateway serves
 UDP (x360-gateway v0.9.6); re-sign-in after changing the list, since it comes from the
 boot-time ticket.
+
+`X360_XARB_DATABASE_URL` (Postgres, schema `x360_xarb` in database `x360`; required) comes from `~/openpak/deploy/x360-xarb/db.env`, mode 0600, never committed.

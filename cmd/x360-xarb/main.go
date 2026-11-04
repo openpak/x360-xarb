@@ -23,7 +23,15 @@ func main() {
 		addr = ":10016"
 	}
 	key := os.Getenv("X360_GATEWAY_KEY")
-	h := &xarb.Handler{Store: xarb.NewStore(), Log: log}
+	dbCtx, dbCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	store, err := xarb.OpenStore(dbCtx, os.Getenv("X360_XARB_DATABASE_URL"), xarb.Schema)
+	dbCancel()
+	if err != nil {
+		log.Error("state: X360_XARB_DATABASE_URL is required and must be reachable", "err", err)
+		os.Exit(2)
+	}
+	defer store.Close()
+	h := &xarb.Handler{Store: store, Log: log}
 	if u := os.Getenv("X360_XARB_STATPOST_URL"); u != "" { // e.g. http://openpak-x360-xstats:10007/xstats/statpost.ashx
 		h.StatPost = xarb.PostTo(u, key, &http.Client{Timeout: 5 * time.Second})
 	}

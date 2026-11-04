@@ -8,7 +8,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -19,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/openpak/x360-common/pgstate"
 	"github.com/openpak/x360-common/wire"
 )
 
@@ -51,15 +51,109 @@ type arb struct {
 	written map[[2]uint64]bool // (xuid, view) rows already taken from a report
 }
 
-// Store holds the arbitrated sessions in memory.
-// ponytail: a restart forgets registrations; consoles re-register for their next match.
+// Schema is the Postgres schema xarb owns inside the x360 database.
+const (
+	Schema   = "x360_xarb"
+	stateKey = "arbs"
+)
+
+// Store holds the arbitrated sessions. They are one document in Postgres (schema x360_xarb),
+// rewritten after each change, so a restart keeps registrations and the rows already taken
+// from a report; a nil pg is memory only (tests).
+// ponytail: whole-document rewrite; sessions expire half an hour after their lifetime ends.
 type Store struct {
 	mu  sync.Mutex
+	pg  *pgstate.Store
 	m   map[key]*arb
 	now func() time.Time
 }
 
 func NewStore() *Store { return &Store{m: map[key]*arb{}, now: time.Now} }
+
+// persisted is the JSON form of a session; 64-bit ids are hex strings (jsonb numbers are doubles
+// in many readers).
+type persisted struct {
+	KID, Nonce string
+	Title      uint32
+	Regs       []persistedReg
+	Expires    time.Time
+	Written    [][2]string
+}
+
+type persistedReg struct {
+	Machine string
+	Users   []string
+}
+
+func hx(v uint64) string { return strconv.FormatUint(v, 16) }
+func unhx(s string) uint64 {
+	v, _ := strconv.ParseUint(s, 16, 64)
+	return v
+}
+
+// OpenStore opens the Postgres-backed store and loads the sessions. An empty dsn is an error.
+func OpenStore(ctx context.Context, dsn, schema string) (*Store, error) {
+	pg, err := pgstate.Open(ctx, dsn, schema)
+	if err != nil {
+		return nil, err
+	}
+	s := NewStore()
+	s.pg = pg
+	var doc struct{ Arbs []persisted }
+	if _, err := pg.Load(ctx, stateKey, &doc); err != nil {
+		pg.Close()
+		return nil, err
+	}
+	for _, p := range doc.Arbs {
+		a := &arb{title: p.Title, expires: p.Expires, written: map[[2]uint64]bool{}}
+		for _, r := range p.Regs {
+			reg := registrant{machine: unhx(r.Machine)}
+			for _, u := range r.Users {
+				reg.users = append(reg.users, unhx(u))
+			}
+			a.regs = append(a.regs, reg)
+		}
+		for _, w := range p.Written {
+			a.written[[2]uint64{unhx(w[0]), unhx(w[1])}] = true
+		}
+		s.m[key{unhx(p.KID), unhx(p.Nonce)}] = a
+	}
+	s.expire()
+	return s, nil
+}
+
+// Close releases the database pool.
+func (s *Store) Close() {
+	if s.pg != nil {
+		s.pg.Close()
+	}
+}
+
+// saveLocked writes the live sessions; the caller holds s.mu.
+func (s *Store) saveLocked() error {
+	if s.pg == nil {
+		return nil
+	}
+	s.expire()
+	arbs := make([]persisted, 0, len(s.m))
+	for k, a := range s.m {
+		p := persisted{KID: hx(k.kid), Nonce: hx(k.nonce), Title: a.title, Expires: a.expires}
+		for _, r := range a.regs {
+			pr := persistedReg{Machine: hx(r.machine)}
+			for _, u := range r.users {
+				pr.Users = append(pr.Users, hx(u))
+			}
+			p.Regs = append(p.Regs, pr)
+		}
+		for w := range a.written {
+			p.Written = append(p.Written, [2]string{hx(w[0]), hx(w[1])})
+		}
+		arbs = append(arbs, p)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return s.pg.Save(ctx, stateKey, map[string]any{"Arbs": arbs})
+}
 
 func (s *Store) expire() {
 	for k, a := range s.m {
@@ -88,6 +182,12 @@ func (h *Handler) log() *slog.Logger {
 type httpErr string
 
 func (e httpErr) Error() string { return string(e) }
+
+// dbErr is a failure to persist a session (answered 503).
+type dbErr struct{ err error }
+
+func (e dbErr) Error() string { return "arbitration store unavailable" }
+func (e dbErr) Unwrap() error { return e.err }
 
 const (
 	errNotRegistrant = httpErr("console is not a registrant of this arbitration")
@@ -121,16 +221,19 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "/xarb/reportresult.ashx":
 		err = h.report(r, machine, body)
 	default:
-		h.log().Info("unhandled", "path", r.URL.Path, "body", hex.EncodeToString(body))
 		http.NotFound(w, r)
 		return
 	}
-	h.log().Info("xarb", "path", r.URL.Path, "account", acct, "content_type", r.Header.Get("Content-Type"),
-		"body", hex.EncodeToString(body), "reply_len", len(reply), "err", err)
+	// httplog writes the request line (method, path, status, ms); bodies and accounts are never logged.
 	if err != nil {
 		code := http.StatusBadRequest
-		if err == errNotRegistrant {
+		var de dbErr
+		switch {
+		case err == errNotRegistrant:
 			code = http.StatusForbidden
+		case errors.As(err, &de):
+			code = http.StatusServiceUnavailable
+			h.log().Warn("store", "path", r.URL.Path, "err", de.err)
 		}
 		http.Error(w, err.Error(), code)
 		return
@@ -216,6 +319,9 @@ func (h *Handler) register(machine uint64, users []uint64, body []byte) ([]byte,
 			w = binary.LittleEndian.AppendUint32(w, 0)
 		}
 	}
+	if err := s.saveLocked(); err != nil {
+		return nil, dbErr{err}
+	}
 	return w, nil
 }
 
@@ -249,6 +355,9 @@ func (h *Handler) extend(machine uint64, body []byte) error {
 	if a != nil {
 		if t := s.now().Add(time.Duration(binary.LittleEndian.Uint16(rest))*time.Second + grace); t.After(a.expires) {
 			a.expires = t
+		}
+		if serr := s.saveLocked(); serr != nil && err == nil {
+			err = dbErr{serr}
 		}
 	}
 	return err
@@ -313,6 +422,12 @@ func (h *Handler) report(r *http.Request, machine uint64, body []byte) error {
 		}
 		for id := range seen {
 			a.written[id] = true
+		}
+		if len(seen) > 0 {
+			if err := s.saveLocked(); err != nil {
+				s.mu.Unlock()
+				return dbErr{err}
+			}
 		}
 	}
 	s.mu.Unlock()
